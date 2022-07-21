@@ -1407,6 +1407,8 @@ BrowserContext:
         outputFile: string?
         handleSIGINT: boolean?
         omitCallTracking: boolean?
+        showRecorder: boolean?
+        actionListener: json?
 
     disableRecorder:
       internal: true

@@ -90,6 +90,7 @@ export class Recorder extends EventEmitter<RecorderEventMap> implements Instrume
   private _listeners: RegisteredListener[] = [];
   private _enabled: boolean = false;
   private _callLogs: CallLog[] = [];
+  private _actions: actions.ActionInContext[] = [];
 
   static forContext(context: BrowserContext, params: channels.BrowserContextEnableRecorderParams): Promise<Recorder> {
     let recorderPromise = (context as any)[recorderSymbol] as Promise<Recorder>;
@@ -106,7 +107,7 @@ export class Recorder extends EventEmitter<RecorderEventMap> implements Instrume
 
   private static async _create(context: BrowserContext, params: channels.BrowserContextEnableRecorderParams = {}): Promise<Recorder> {
     const recorder = new Recorder(context, params);
-    await recorder._install();
+    await recorder._install(Boolean(params.showRecorder));
     return recorder;
   }
 
@@ -120,8 +121,11 @@ export class Recorder extends EventEmitter<RecorderEventMap> implements Instrume
 
     this._signalProcessor = new RecorderSignalProcessor({
       addAction: (actionInContext: actions.ActionInContext) => {
-        if (this._enabled)
+        if (this._enabled){
           this.emit(RecorderEvent.ActionAdded, actionInContext);
+          this._actions.push(actionInContext);
+          this._params.actionListener?.emit('actions', this._actions);
+        }
       },
       addSignal: (signal: actions.SignalInContext) => {
         if (this._enabled)
@@ -148,9 +152,14 @@ export class Recorder extends EventEmitter<RecorderEventMap> implements Instrume
     }
   }
 
-  private async _install() {
+  private async installRecorder() {
     this.emit(RecorderEvent.ModeChanged, this._mode);
     this.emit(RecorderEvent.PausedStateChanged, this._debugger.isPaused());
+  }
+
+  private async _install(showRecorder: Boolean) {
+    if (showRecorder)
+      await this.installRecorder();
 
     this._context.once(BrowserContext.Events.Close, () => {
       eventsHelper.removeEventListeners(this._listeners);
@@ -187,7 +196,10 @@ export class Recorder extends EventEmitter<RecorderEventMap> implements Instrume
 
       await this._context.exposeBinding(progress, '__pw_recorderElementPicked', false, async ({ frame }, elementInfo: ElementInfo) => {
         const selectorChain = await generateFrameSelector(frame);
-        this.emit(RecorderEvent.ElementPicked, { selector: buildFullSelector(selectorChain, elementInfo.selector), ariaSnapshot: elementInfo.ariaSnapshot }, true);
+        const selector = buildFullSelector(selectorChain, elementInfo.selector);
+        this.emit(RecorderEvent.ElementPicked, { selector, ariaSnapshot: elementInfo.ariaSnapshot }, true);
+        this.emitSelector(selector);
+
       });
 
       await this._context.exposeBinding(progress, '__pw_recorderSetMode', false, async ({ frame }, mode: Mode) => {
@@ -200,6 +212,11 @@ export class Recorder extends EventEmitter<RecorderEventMap> implements Instrume
         if (frame.parentFrame())
           return;
         this._overlayState = state;
+      });
+
+      // added for synthetics
+      await this._context.exposeBinding(progress, '__pw_setMode', false, async  (_, mode: Mode) => {
+        this.setMode(mode);
       });
 
       await this._context.exposeBinding(progress, '__pw_resume', false, () => {
@@ -230,6 +247,10 @@ export class Recorder extends EventEmitter<RecorderEventMap> implements Instrume
     if (this._debugger.isPaused())
       this._pausedStateChanged();
     this._debugger.on(Debugger.Events.PausedStateChanged, () => this._pausedStateChanged());
+  }
+
+  emitSelector(selector: string) {
+    this._params.actionListener?.emit('selector', selector);
   }
 
   private _pausedStateChanged() {
